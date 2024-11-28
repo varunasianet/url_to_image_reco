@@ -14,7 +14,6 @@ import aiohttp
 from bs4 import BeautifulSoup
 import os
 from urllib.parse import urlparse, unquote
-from googlesearch import search
 from langchain.tools import Tool
 from langchain.utilities import GoogleSearchAPIWrapper
 from langchain.document_loaders import WebBaseLoader
@@ -31,18 +30,31 @@ from google.cloud import aiplatform
 import html
 import json
 import re
+from google.oauth2 import service_account
+from langchain_google_vertexai import VertexAIEmbeddings
+
+
+# Load the service account key file
+credentials = service_account.Credentials.from_service_account_file(
+    '/home/varun_saagar/urltoweb/vertexai-key.json',
+    scopes=['https://www.googleapis.com/auth/cloud-platform']
+)
+
+# Initialize VertexAIEmbeddings with the credentials
+embeddings = VertexAIEmbeddings(
+    model_name="text-embedding-004",
+    project="asianet-tech-staging",
+    credentials=credentials
+)
 
 # Set up Vertex AI credentials (unchanged)
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/Users/asianet/Invoice-Query-Tool-using-gemini-ai/service-key.json"
 os.environ["PROJECT_ID"] = "asianet-tech-staging"
 
 os.environ["GOOGLE_CSE_ID"] = "a1343a858e5ba4c1f"
 os.environ["GOOGLE_API_KEY"] = "AIzaSyCPvYQ-GRzdS2-Y_1hlboPzygNDC_1cB9c"
 
 aiplatform.init(project="asianet-tech-staging", location="asia-southeast1")
-
-# Initialize VertexAI embeddings with a specific model name
-embeddings = VertexAIEmbeddings(model_name="text-embedding-004",project="asianet-tech-staging",
-    location="asia-southeast1")
 
 # Initialize VertexAI model for text generation
 llm = VertexAI(
@@ -51,6 +63,7 @@ llm = VertexAI(
     temperature=0.7,
     top_p=0.95,
 )
+
 
 class RealTimeWebScraper:
     def __init__(self, urls):
@@ -176,7 +189,7 @@ async def check_image_aspect_ratio(session, url):
                 area = width * height
                 if aspect_ratio <= 0.3 or aspect_ratio >= 3:
                     return False, f"Aspect ratio out of range: {aspect_ratio:.2f}"
-                if area <= 10000:
+                if area <= 500:
                     return False, f"Image area too small: {area}"
                 return True, f"Image passed: aspect ratio {aspect_ratio:.2f}, area {area}"
             else:
@@ -309,18 +322,20 @@ prompt_template = PromptTemplate.from_template(
     Target Audience: {target_audience}
 
     Follow these guidelines:
-    1. Read and analyze the provided content thoroughly.
-    2. Create {num_slides} slides, each in the specified JSON-like format, with all text in {output_language}.
-    3. The first slide is crucial:
-       - Make its title exceptionally engaging and intriguing.
-       - Keep the description very short and crisp (1-2 sentences maximum).
-       - End the first slide's description with a question that piques curiosity.
-       - Do not provide any details about the story's content beyond the initial hook and question.    4. Use concise, vivid language suitable for a visual story format in {output_language}.
-    5. Ensure that the story flows logically from one slide to the next, with each slide building anticipation for the next.
-    6. The final slide should summarize or conclude the story in a satisfying way.
-    7. Each slide's description should be no longer than 2-3 sentences, but make every word count for maximum impact.
-    8. Translate all content from {input_language} to {output_language}, including the webstorie_title and title.
-    9. Tailor the language, tone, and content to suit the {target_audience} audience.
+    1. The web story title must be exactly 3 words long.
+    2. Each slide title must be no more than 70 characters long.
+    3. Each slide description must be no more than 180 characters long.
+    4. Create {num_slides} slides, each in the specified JSON-like format, with all text in {output_language}.
+    5. The first slide is crucial:
+       - Its title and Description MUST be a compelling question that hooks the reader instantly.
+       - The question should create curiosity and make the reader want to explore further.
+       - Example: "Why do enemies fear Mossad, Israel's intelligence agency?"
+       - The description should hint at intriguing answers without giving everything away.
+    6. Use concise, vivid language suitable for a visual story format in {output_language}.
+    7. Ensure that the story flows logically from one slide to the next, building on the intrigue created by the first slide.
+    8. The final slide should summarize or conclude the story in a satisfying way, potentially circling back to answer the initial question.
+    9. Translate all content from {input_language} to {output_language}.
+    10. Tailor the language, tone, and content to suit the {target_audience} audience.
 
     Provide the {num_slides} slides, each in the following format:
     {{
@@ -329,10 +344,28 @@ prompt_template = PromptTemplate.from_template(
         "description": "{{DESCRIPTION}}"
     }}
 
-    Ensure the output is a valid JSON array of {num_slides} slide objects.
-    Remember, the first slide should be so compelling that readers can't help but want to see what comes next!
+    IMPORTANT: Your response must be a valid JSON array of {num_slides} slide objects. 
+    Do not include any text before or after the JSON array. 
+    Ensure each slide object has exactly these keys: "webstorie_title", "title", "description".
+    Remember, the first slide's title MUST be a captivating question that creates immediate interest!
     """
 )
+
+
+def validate_slide_content(slide):
+    webstorie_title_words = slide.get('webstorie_title', '').split()
+    title_length = len(slide.get('title', ''))
+    description_length = len(slide.get('description', ''))
+
+    if len(webstorie_title_words) != 3:
+        return False, f"Web story title must be exactly 3 words (current: {len(webstorie_title_words)})"
+    if title_length > 70:
+        return False, f"Slide title exceeds 70 characters (current: {title_length})"
+    if description_length > 180:
+        return False, f"Slide description exceeds 180 characters (current: {description_length})"
+    
+    return True, "Valid"
+
 
 search_prompt_template = PromptTemplate.from_template(
     """
@@ -403,7 +436,7 @@ search_chain = search_prompt_template | main_model | StrOutputParser()
 # New prompt template for regenerating a single slide
 regenerate_prompt_template = PromptTemplate.from_template(
     """
-    You are an AI assistant specialized in creating engaging web stories. Your task is to regenerate a specific part of a slide in a {num_slides}-slide web story in {output_language}, tailored for the {target_audience} audience. The regenerated content should fit seamlessly into the existing story context.
+    You are an AI assistant specialized in creating engaging web stories. Your task is to regenerate a specific part of a slide in a {num_slides}-slide web story in {output_language}, tailored for the {target_audience} audience. The regenerated content should fit seamlessly into the existing story context and adhere to strict character limits.
 
     {article_url_or_search_summary}
 
@@ -425,10 +458,47 @@ regenerate_prompt_template = PromptTemplate.from_template(
     4. Keeps the content concise and suitable for a web story format.
     5. Adheres to the facts presented in the original content.
     6. Is tailored to the {target_audience} audience in terms of language, tone, and content.
+    7. Strictly adheres to the following character limits:
+       - If regenerating the web story title: EXACTLY 3 words
+       - If regenerating a slide title: NO MORE THAN 70 characters
+       - If regenerating a slide description: NO MORE THAN 180 characters
 
-    Provide the regenerated {part_to_regenerate} as a single string.
+    Provide the regenerated {part_to_regenerate} as a single string, ensuring it meets the specified character limit.
     """
 )
+
+fix_content_prompt = PromptTemplate.from_template(
+    """
+    You are an AI assistant specialized in fixing web story content to meet specific character limits, with expertise in handling multiple languages including Hindi, Malayalam, Kannada, Marathi, Bengali, Tamil, and Telugu. Your task is to modify the given content to fit within the required constraints while maintaining the essence of the original message.
+
+    Original content: {original_content}
+    Content type: {content_type}
+    Current character count: {current_count}
+    Maximum allowed characters: {max_chars}
+    Output language: {output_language}
+    Target audience: {target_audience}
+
+    Please modify the content to fit within the character limit. Ensure that:
+    1. The main message or key points are preserved.
+    2. The language remains engaging and suitable for a web story format.
+    3. The content is in {output_language}.
+    4. The tone is appropriate for the {target_audience} audience.
+    5. For non-English languages, consider the character count, not word count.
+
+    Specific requirements based on content type:
+    - If content_type is "webstorie_title":
+        - It MUST be EXACTLY 3 words long for English.
+        - For non-English languages, aim for a concise title that captures the essence in about 3-5 words, not exceeding 30 characters.
+    - If content_type is "title":
+        - It MUST be NO MORE THAN 70 characters long.
+    - If content_type is "description":
+        - It MUST be NO MORE THAN 180 characters long.
+
+    Provide the modified content as a single string, ensuring it meets the specified character limit and requirements for the given content type.
+    """
+)
+
+fix_content_chain = fix_content_prompt | llm | StrOutputParser()
 
 # Set up the chains
 # Update the main chain and search chain
@@ -437,14 +507,11 @@ search_chain = search_prompt_template | llm | StrOutputParser()
 regenerate_chain = regenerate_prompt_template | llm | StrOutputParser()
 
 
-
 # List of supported languages (unchanged)
 supported_languages = ["English", "Hindi", "Tamil", "Telugu", "Malayalam", "Kannada"]
 
 # List of target audiences
 target_audiences = ["Common", "Gen Z", "90s", "Middle-aged", "Older"]
-
-
 
 
 
@@ -460,93 +527,68 @@ def extract_slide_info(raw_output):
     
     return {"title": title, "description": description}
 
-def regenerate_slide(input_language, output_language, article_url, num_slides, slide_number, context):
+def regenerate_slide_part_interface(input_language, output_language, url_input, prompt_input, num_slides, target_audience, slide_index, part_to_regenerate):
     global generated_web_story
-    if slide_number < 1 or slide_number > num_slides:
-        return f"Invalid slide number. Please choose a number between 1 and {num_slides}."
+    num_slides = num_slides or 8
+    slide_index = int(slide_index)
     
-    result = regenerate_chain.invoke({
-        "input_language": input_language,
-        "output_language": output_language,
-        "article_url": article_url,
-        "num_slides": num_slides,
-        "slide_number": slide_number,
-        "context": context,
-        "target_audience": target_audience
-    })
+    content_input = url_input if url_input else prompt_input
+    input_type = "url" if url_input else "prompt"
     
-    try:
-        # Check if the result is already a dictionary
-        if isinstance(result, dict):
-            regenerated_slide = result
-        else:
-            regenerated_slide = json.loads(result)
-        
-        # Update the stored web story with the regenerated slide
-        if generated_web_story and isinstance(generated_web_story, list):
-            generated_web_story[slide_number - 1] = regenerated_slide
-        return regenerated_slide
-    except json.JSONDecodeError:
-        # Attempt to extract information even if JSON parsing fails
-        extracted_info = extract_slide_info(result)
-        
-        # Create a structured slide object from extracted information
-        regenerated_slide = {
-            "webstorie_title": generated_web_story[0].get("webstorie_title", "N/A") if generated_web_story else "N/A",
-            "title": extracted_info['title'],
-            "description": extracted_info['description']
-        }
-        
-        # Update the stored web story with the extracted information
-        if generated_web_story and isinstance(generated_web_story, list):
-            generated_web_story[slide_number - 1] = regenerated_slide
-        
-        return regenerated_slide
+    if not generated_web_story:
+        return gr.Markdown("Please generate the web story first before regenerating individual parts.")
+    
+    context = "\n".join([f"Slide {i+1}: {json.dumps(slide)}" for i, slide in enumerate(generated_web_story)])
+    current_slide_content = json.dumps(generated_web_story[slide_index])
+    
+    regenerated_part = regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_index + 1, part_to_regenerate, context, current_slide_content, target_audience, input_type)
+    
+    if "error" in regenerated_part:
+        return gr.Markdown(regenerated_part["error"])
+    
+    updated_slide = generated_web_story[slide_index]
+    updated_slide[part_to_regenerate] = regenerated_part[part_to_regenerate]
+    
+    if part_to_regenerate == "webstorie_title":
+        slide_content = f"**Web Story Title:** {regenerated_part[part_to_regenerate]}"
+    else:
+        slide_content = f"**Slide {slide_index + 1}**\n\n**Title:** {updated_slide.get('title', 'N/A')}\n\n**Description:** {updated_slide.get('description', 'N/A')}"
+    
+    # Save the updated slides to file
+    save_slides_to_file(content_input, generated_web_story)
+    
+    return gr.Markdown(slide_content)
 
-def regenerate_individual_slide(input_language, output_language, article_url, num_slides, slide_index, *current_slides):
+
+
+def regenerate_individual_slide(input_language, output_language, content_input, num_slides, target_audience, slide_index, input_type):
     global generated_web_story
     if not generated_web_story:
         return gr.Markdown("Please generate the web story first before regenerating individual slides.")
     
     context = "\n".join([f"Slide {i+1}: {json.dumps(slide)}" for i, slide in enumerate(generated_web_story)])
-    regenerated_slide = regenerate_slide(input_language, output_language, article_url, num_slides, slide_index + 1, context)
+    current_slide_content = json.dumps(generated_web_story[slide_index])
     
-    return gr.Markdown(f"**Slide {slide_index + 1}**\n\n**Title:** {regenerated_slide.get('title', 'N/A')}\n\n**Description:** {regenerated_slide.get('description', 'N/A')}")
+    # Regenerate title
+    regenerated_title = regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_index + 1, "title", context, current_slide_content, target_audience, input_type)
+    
+    # Regenerate description
+    regenerated_description = regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_index + 1, "description", context, current_slide_content, target_audience, input_type)
+    
+    # Update the slide in generated_web_story
+    if "error" not in regenerated_title and "error" not in regenerated_description:
+        generated_web_story[slide_index]["title"] = regenerated_title["title"]
+        generated_web_story[slide_index]["description"] = regenerated_description["description"]
+        
+        # Save the updated slides to file
+        save_slides_to_file(content_input, generated_web_story)
+        
+        return gr.Markdown(f"**Slide {slide_index + 1}**\n\n**Title:** {regenerated_title['title']}\n\n**Description:** {regenerated_description['description']}")
+    else:
+        error_message = regenerated_title.get("error", "") or regenerated_description.get("error", "")
+        return gr.Markdown(f"Error regenerating slide: {error_message}")
 
 generated_web_story = None
-
-def regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_number, part_to_regenerate, context, current_slide_content, target_audience, input_type):
-    global generated_web_story
-    if slide_number < 1 or slide_number > num_slides:
-        return f"Invalid slide number. Please choose a number between 1 and {num_slides}."
-    
-    # Prepare the input for the regenerate_chain
-    chain_input = {
-        "input_language": input_language,
-        "output_language": output_language,
-        "num_slides": num_slides,
-        "slide_number": slide_number,
-        "part_to_regenerate": part_to_regenerate,
-        "context": context,
-        "current_slide_content": current_slide_content,
-        "target_audience": target_audience
-    }
-    
-    # Add the appropriate content input based on the input type
-    if input_type == "url":
-        chain_input["article_url"] = content_input
-    else:  # prompt
-        chain_input["search_summary"] = content_input
-    
-    result = regenerate_chain.invoke(chain_input)
-    
-    # Update the stored web story with the regenerated part
-    if generated_web_story and isinstance(generated_web_story, list):
-        generated_web_story[slide_number - 1][part_to_regenerate] = result
-    
-    return result
-
-
 
 def create_slide_component(index):
     with gr.Group():
@@ -577,8 +619,6 @@ def save_slides_to_file(content_input, slides):
         json.dump(slides, f, ensure_ascii=False, indent=2)
     return file_path
 
-
-
 def generate_web_story(input_language, output_language, content_input, num_slides, target_audience, input_type):
     global generated_web_story
     if input_language not in supported_languages or output_language not in supported_languages:
@@ -595,18 +635,33 @@ def generate_web_story(input_language, output_language, content_input, num_slide
     
     # Generate the web story
     result = main_chain.invoke({
-        "input_language": input_language,
-        "output_language": output_language,
-        "content": content,
-        "num_slides": num_slides,
-        "target_audience": target_audience
-    })
-    
-    # Parse the output (same as before)
+    "input_language": input_language,
+    "output_language": output_language,
+    "content": content,
+    "num_slides": num_slides,
+    "target_audience": target_audience
+})
+    print("Raw output:", result)
+
     try:
         parsed_output = json.loads(result)
+        
         if not isinstance(parsed_output, list) or len(parsed_output) != num_slides:
             raise ValueError(f"Output is not a list of {num_slides} slides")
+        
+        # Validate and potentially regenerate slides
+        for i, slide in enumerate(parsed_output):
+            is_valid, message = validate_slide_content(slide)
+            attempts = 0
+            while not is_valid and attempts < 3:
+                print(f"Regenerating slide {i+1}: {message}")
+                regenerated_slide = regenerate_slide_part(input_language, output_language, content_input, num_slides, i+1, "all", "", json.dumps(slide), target_audience, input_type)
+                slide.update(regenerated_slide)
+                is_valid, message = validate_slide_content(slide)
+                attempts += 1
+            
+            if not is_valid:
+                print(f"Warning: Slide {i+1} still invalid after 3 attempts: {message}")
         
         # Assign scraped images to slides (if available)
         last_image = None
@@ -621,10 +676,27 @@ def generate_web_story(input_language, output_language, content_input, num_slide
         save_slides_to_file(content_input, generated_web_story)  # Save slides to file
         return parsed_output
     except json.JSONDecodeError:
-        # If parsing as JSON fails, try to extract JSON-like structures
         json_like_structures = re.findall(r'\{[^{}]*\}', result)
+        if json_like_structures:
+            parsed_output = [json.loads(struct) for struct in json_like_structures]
+        else:
+            return f"Error: Unable to parse output as JSON. Raw output:\n{result}"
         if len(json_like_structures) == num_slides:
             generated_web_story = [json.loads(struct) for struct in json_like_structures]
+            
+            # Validate and potentially regenerate slides
+            for i, slide in enumerate(generated_web_story):
+                is_valid, message = validate_slide_content(slide)
+                attempts = 0
+                while not is_valid and attempts < 3:
+                    print(f"Regenerating slide {i+1}: {message}")
+                    regenerated_slide = regenerate_slide_part(input_language, output_language, content_input, num_slides, i+1, "all", "", json.dumps(slide), target_audience, input_type)
+                    slide.update(regenerated_slide)
+                    is_valid, message = validate_slide_content(slide)
+                    attempts += 1
+                
+                if not is_valid:
+                    print(f"Warning: Slide {i+1} still invalid after 3 attempts: {message}")
             
             # Assign scraped images to slides (if available)
             last_image = None
@@ -640,68 +712,100 @@ def generate_web_story(input_language, output_language, content_input, num_slide
         else:
             return f"Error parsing output. Raw output:\n{result}"
 
-def regenerate_slide_part_interface(input_language, output_language, url_input, prompt_input, num_slides, target_audience, slide_index, part_to_regenerate):
-    global generated_web_story
-    num_slides = num_slides or 8
-    slide_index = int(slide_index)
-    
-    content_input = url_input if url_input else prompt_input
-    input_type = "url" if url_input else "prompt"
-    
-    if not generated_web_story:
-        return gr.Markdown("Please generate the web story first before regenerating individual parts.")
-    
-    context = "\n".join([f"Slide {i+1}: {json.dumps(slide)}" for i, slide in enumerate(generated_web_story)])
-    current_slide_content = json.dumps(generated_web_story[slide_index])
-    
-    regenerated_part = regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_index + 1, part_to_regenerate, context, current_slide_content, target_audience, input_type)
-    
-    updated_slide = generated_web_story[slide_index]
-    updated_slide[part_to_regenerate] = regenerated_part
-    
-    slide_content = f"**Slide {slide_index + 1}**\n\n**Title:** {updated_slide.get('title', 'N/A')}\n\n**Description:** {updated_slide.get('description', 'N/A')}"
-    
-    # Save the updated slides to file
-    save_slides_to_file(content_input, generated_web_story)
-    
-    return gr.Markdown(slide_content)
-
 
 
 
 def regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_number, part_to_regenerate, context, current_slide_content, target_audience, input_type):
     global generated_web_story
     if slide_number < 1 or slide_number > num_slides:
-        return f"Invalid slide number. Please choose a number between 1 and {num_slides}."
+        return {"error": f"Invalid slide number. Please choose a number between 1 and {num_slides}."}
     
-    # Prepare the input for the regenerate_chain
-    chain_input = {
-        "input_language": input_language,
-        "output_language": output_language,
-        "num_slides": num_slides,
-        "slide_number": slide_number,
-        "part_to_regenerate": part_to_regenerate,
-        "context": context,
-        "current_slide_content": current_slide_content,
-        "target_audience": target_audience
-    }
+    max_attempts = 3
     
-    # Set the article_url_or_search_summary based on the input type
-    if input_type == "url":
-        chain_input["article_url_or_search_summary"] = f"Original article URL: {content_input}"
-    else:  # prompt
-        chain_input["article_url_or_search_summary"] = f"Search summary: {content_input}"
+    # Define max_chars and requirements for all cases
+    if part_to_regenerate == "webstorie_title":
+        max_chars = 30
+        max_words = 3
+        requirement = f"The web story title MUST be 3 words or less for English, or not exceed {max_chars} characters for other languages."
+    elif part_to_regenerate == "title":
+        max_chars = 70
+        requirement = f"The slide title MUST be {max_chars} characters or less."
+    elif part_to_regenerate == "description":
+        max_chars = 180
+        requirement = f"The slide description MUST be {max_chars} characters or less."
+    else:
+        return {"error": f"Invalid part_to_regenerate: {part_to_regenerate}"}
     
-    result = regenerate_chain.invoke(chain_input)
+    for attempt in range(max_attempts):
+        chain_input = {
+            "input_language": input_language,
+            "output_language": output_language,
+            "num_slides": num_slides,
+            "slide_number": slide_number,
+            "part_to_regenerate": part_to_regenerate,
+            "context": context,
+            "current_slide_content": current_slide_content,
+            "target_audience": target_audience,
+            "additional_instructions": requirement
+        }
+        
+        if input_type == "url":
+            chain_input["article_url_or_search_summary"] = f"Original article URL: {content_input}"
+        else:  # prompt
+            chain_input["article_url_or_search_summary"] = f"Search summary: {content_input}"
+        
+        result = regenerate_chain.invoke(chain_input)
+        
+        # Validate the regenerated content
+        is_valid = False
+        if part_to_regenerate == "webstorie_title":
+            if output_language.lower() == "english":
+                is_valid = len(result.split()) <= max_words
+            else:
+                is_valid = len(result) <= max_chars
+        elif part_to_regenerate in ["title", "description"]:
+            is_valid = len(result) <= max_chars
+        
+        if is_valid:
+            break
+        
+        # If validation fails, use the fix_content_chain
+        fix_input = {
+            "original_content": result,
+            "content_type": part_to_regenerate,
+            "current_count": len(result),
+            "max_chars": max_chars,
+            "output_language": output_language,
+            "target_audience": target_audience,
+            "requirement": requirement
+        }
+        result = fix_content_chain.invoke(fix_input)
+        
+        # Validate the fixed content
+        if part_to_regenerate == "webstorie_title":
+            if output_language.lower() == "english":
+                is_valid = len(result.split()) <= max_words
+            else:
+                is_valid = len(result) <= max_chars
+        elif part_to_regenerate in ["title", "description"]:
+            is_valid = len(result) <= max_chars
+        
+        if is_valid:
+            break
+        
+        if attempt == max_attempts - 1:
+            return {"error": f"Failed to generate valid content for {part_to_regenerate} after {max_attempts} attempts."}
     
     # Update the stored web story with the regenerated part
     if generated_web_story and isinstance(generated_web_story, list):
-        generated_web_story[slide_number - 1][part_to_regenerate] = result
+        if part_to_regenerate == "webstorie_title":
+            generated_web_story[0]["webstorie_title"] = result
+        else:
+            generated_web_story[slide_number - 1][part_to_regenerate] = result
     
-    return result
+    return {part_to_regenerate: result}
 
     
-
 def regenerate_slide_part_interface(input_language, output_language, url_input, prompt_input, num_slides, target_audience, slide_index, part_to_regenerate):
     global generated_web_story
     num_slides = num_slides or 8
@@ -718,16 +822,21 @@ def regenerate_slide_part_interface(input_language, output_language, url_input, 
     
     regenerated_part = regenerate_slide_part(input_language, output_language, content_input, num_slides, slide_index + 1, part_to_regenerate, context, current_slide_content, target_audience, input_type)
     
-    updated_slide = generated_web_story[slide_index]
-    updated_slide[part_to_regenerate] = regenerated_part
+    if "error" in regenerated_part:
+        return gr.Markdown(regenerated_part["error"])
     
-    slide_content = f"**Slide {slide_index + 1}**\n\n**Title:** {updated_slide.get('title', 'N/A')}\n\n**Description:** {updated_slide.get('description', 'N/A')}"
+    updated_slide = generated_web_story[slide_index]
+    updated_slide[part_to_regenerate] = regenerated_part[part_to_regenerate]
+    
+    if part_to_regenerate == "webstorie_title":
+        slide_content = f"**Web Story Title:** {regenerated_part[part_to_regenerate]}"
+    else:
+        slide_content = f"**Slide {slide_index + 1}**\n\n**Title:** {updated_slide.get('title', 'N/A')}\n\n**Description:** {updated_slide.get('description', 'N/A')}"
     
     # Save the updated slides to file
     save_slides_to_file(content_input, generated_web_story)
     
     return gr.Markdown(slide_content)
-
 
 # Update the save_slides_to_file function to handle both URL and prompt inputs
 def save_slides_to_file(content_input, slides):
@@ -867,9 +976,9 @@ with gr.Blocks(css="button.sm { margin: 0.1rem; }") as demo:
 
         content_input = url_input if url_input else prompt_input
         input_type = "url" if url_input else "prompt"
-    
+
         generated_story = generate_web_story(input_language, output_language, content_input, num_slides, target_audience, input_type)
-         
+        
         outputs = [gr.Markdown("")] * 11
         image_outputs = [gr.Image(value=None)] * 10
         button_visibility = [gr.update(visible=False)] * 61  # Increased to account for all buttons
@@ -902,8 +1011,6 @@ with gr.Blocks(css="button.sm { margin: 0.1rem; }") as demo:
 
         return outputs + image_outputs + button_visibility + [export_output, export_status]
 
-
-
     submit_btn.click(
         fn=gradio_interface,
         inputs=[input_lang, output_lang, url_input, prompt_input, num_slides, target_audience],
@@ -914,10 +1021,6 @@ with gr.Blocks(css="button.sm { margin: 0.1rem; }") as demo:
                 [export_output, export_status],
         show_progress=True
     )
-
-
-
-    
 
     def regenerate_webstory_title_interface(input_language, output_language, url_input, prompt_input, num_slides, target_audience):
         global generated_web_story
@@ -940,11 +1043,11 @@ with gr.Blocks(css="button.sm { margin: 0.1rem; }") as demo:
 
 
     regenerate_webstory_title_btn.click(
-        fn=regenerate_webstory_title_interface,
-        inputs=[input_lang, output_lang, url_input, prompt_input, num_slides, target_audience],
-        outputs=[webstory_title_output],
-        show_progress=True
-    )
+    fn=regenerate_slide_part_interface,
+    inputs=[input_lang, output_lang, url_input, prompt_input, num_slides, target_audience, gr.Slider(value=0, visible=False), gr.Textbox(value="webstorie_title", visible=False)],
+    outputs=[webstory_title_output],
+    show_progress=True
+)
 
     for i in range(10):
         change_image_btns[i].click(
@@ -982,6 +1085,20 @@ with gr.Blocks(css="button.sm { margin: 0.1rem; }") as demo:
         show_progress=True
     )
 
-
 # Launch the app
-demo.launch()
+
+#demo.launch(server_name="0.0.0.0", server_port=7860)
+import time
+
+if __name__ == "__main__":
+    demo.concurrency_limit = 10
+    demo.launch(
+    server_name="0.0.0.0",
+    server_port=7860,
+    #concurrency_limit=10,  # This replaces the queue(concurrency_count=10)
+    #max_threads=20  # Optional: adjust based on your server's capabilities
+)
+    
+    # Keep the script running
+    while True:
+        time.sleep(1)

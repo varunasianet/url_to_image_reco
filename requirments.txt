@@ -1,0 +1,7 @@
+langchain 
+google-cloud-aiplatform 
+gradio 
+beautifulsoup4 
+Pillow 
+aiohttp 
+google-search-results

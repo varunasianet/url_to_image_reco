@@ -1,0 +1,36 @@
+# Navigate to your project directory
+cd urltoweb
+
+# Create .gitignore file
+cat > .gitignore << EOL
+# Sensitive files
+storage_service.json
+vertexai-key.json
+*key*.json
+*service*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+
+# System files
+.DS_Store
+Thumbs.db
+EOL
