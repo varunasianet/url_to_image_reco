@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+aiohttp
+aiofiles
+pydantic
+python-dotenv
+google-cloud-aiplatform
+google-cloud-storage
+gensim
+nltk
+langchain
+langchain-google-vertexai
+aiolimiter
