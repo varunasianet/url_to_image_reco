@@ -35,8 +35,8 @@ import re
 # Set up Vertex AI credentials (unchanged)
 os.environ["PROJECT_ID"] = "asianet-tech-staging"
 
-os.environ["GOOGLE_CSE_ID"] = "a1343a858e5ba4c1f"
-os.environ["GOOGLE_API_KEY"] = "AIzaSyCPvYQ-GRzdS2-Y_1hlboPzygNDC_1cB9c"
+os.environ["GOOGLE_CSE_ID"] = ""
+os.environ["GOOGLE_API_KEY"] = ""
 
 aiplatform.init(project="asianet-tech-staging", location="asia-southeast1")
 
